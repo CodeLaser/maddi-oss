@@ -22,12 +22,15 @@ in the reactor, select the module with `-pl`:
 ```
 cd jenkins
 env MAVEN_OPTS="$MADDI_EXPORTS -Xmx6G" mvn \
-  -pl cli generate-sources io.codelaser:maddi-mvnplugin:0.8.2:run -DanalysisSteps=prep
+  -pl cli generate-test-sources io.codelaser:maddi-mvnplugin:0.8.2:run -DanalysisSteps=prep
 ```
 
-Notes: run `generate-sources` first so generated roots (e.g. localizer `Messages`) are registered;
+Notes: run `generate-test-sources` first (maddi analyses main *and* test) so every generated/added source root
+is registered — this includes `build-helper-maven-plugin` `add-test-source` roots bound to that phase (e.g.
+langchain4j-core pulls in `../langchain4j-test/src/main/java` there; plain `generate-sources` misses it);
 `jmods` defaults to `java.se` (the whole JDK on the classpath) — override with `-Djmods=java.base` for a leaner run;
 source directories are emitted absolute, so the goal no longer needs to run from the module directory;
+for a multi-module reactor, `mvn install -pl <module> -am -DskipTests` first so the plugin can resolve sibling jars;
 `...:write-input-configuration` (instead of `:run`) just writes `target/inputConfiguration.json` and exits.
 
 ### Gradle projects (e.g. Fernflower) — derive a config from the compile log
