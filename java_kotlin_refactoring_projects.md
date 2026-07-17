@@ -16,17 +16,18 @@ Analyse **prep only** for now (`-DanalysisSteps=prep` / `--analysis-steps prep`)
 
 ### Maven projects (e.g. Jenkins) — the maddi Maven plugin
 
-Install the plugin once (in the maddi repo): `./gradlew :maddi-mvnplugin:publishToMavenLocal`. Then, **from the
-module directory** (source dirs are resolved against the CWD):
+Install the plugin once (in the maddi repo): `./gradlew :maddi-mvnplugin:publishToMavenLocal`. Then, from anywhere
+in the reactor, select the module with `-pl`:
 
 ```
-cd jenkins/cli
+cd jenkins
 env MAVEN_OPTS="$MADDI_EXPORTS -Xmx6G" mvn \
-  generate-sources io.codelaser:maddi-mvnplugin:0.8.2:run -DanalysisSteps=prep -Djmods=java.se
+  -pl cli generate-sources io.codelaser:maddi-mvnplugin:0.8.2:run -DanalysisSteps=prep
 ```
 
 Notes: run `generate-sources` first so generated roots (e.g. localizer `Messages`) are registered;
-`-Djmods=java.se` (not the `java.base` default) puts the whole JDK on the classpath;
+`jmods` defaults to `java.se` (the whole JDK on the classpath) — override with `-Djmods=java.base` for a leaner run;
+source directories are emitted absolute, so the goal no longer needs to run from the module directory;
 `...:write-input-configuration` (instead of `:run`) just writes `target/inputConfiguration.json` and exits.
 
 ### Gradle projects (e.g. Fernflower) — derive a config from the compile log
