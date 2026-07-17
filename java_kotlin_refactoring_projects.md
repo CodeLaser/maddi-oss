@@ -1,4 +1,51 @@
 
+## Running maddi on these projects
+
+Prereqs: JDK 26 (`JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-26.jdk/Contents/Home`).
+The openjdk front-end needs the javac `--add-exports`; keep them in `MADDI_EXPORTS`:
+
+```
+MADDI_EXPORTS="--add-exports jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED \
+ --add-exports jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED \
+ --add-exports jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED \
+ --add-exports jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED \
+ --add-exports jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED"
+```
+
+Analyse **prep only** for now (`-DanalysisSteps=prep` / `--analysis-steps prep`); modification is still too slow.
+
+### Maven projects (e.g. Jenkins) — the maddi Maven plugin
+
+Install the plugin once (in the maddi repo): `./gradlew :maddi-mvnplugin:publishToMavenLocal`. Then, **from the
+module directory** (source dirs are resolved against the CWD):
+
+```
+cd jenkins/cli
+env MAVEN_OPTS="$MADDI_EXPORTS -Xmx6G" mvn \
+  generate-sources io.codelaser:maddi-mvnplugin:0.8.2:run -DanalysisSteps=prep -Djmods=java.se
+```
+
+Notes: run `generate-sources` first so generated roots (e.g. localizer `Messages`) are registered;
+`-Djmods=java.se` (not the `java.base` default) puts the whole JDK on the classpath;
+`...:write-input-configuration` (instead of `:run`) just writes `target/inputConfiguration.json` and exits.
+
+### Gradle projects (e.g. Fernflower) — derive a config from the compile log
+
+No Maven plugin; capture the Gradle compiler arguments and feed them to maddi's `--compile-log`:
+
+```
+cd fernflower
+./gradlew --no-build-cache --rerun-tasks compileJava compileTestJava --debug 2>&1 \
+  | grep -a 'Compiler arguments:' > /tmp/compile.log
+env JAVA_TOOL_OPTIONS="$MADDI_EXPORTS -Xmx6G" maddi \
+  --compile-log /tmp/compile.log --write-input-configuration inputConfiguration.json
+env JAVA_TOOL_OPTIONS="$MADDI_EXPORTS -Xmx6G" maddi \
+  --input-configuration inputConfiguration.json --analysis-steps prep
+```
+
+(`maddi` = the openjdk runner, `org.e2immu.analyzer.run.openjdkmain.Main`; the `--compile-log` path adds the
+`java.se` jmod closure automatically. See `maddi-run-openjdk/running-examples.md` in the maddi repo.)
+
 ## Status: Built
 
 Note: each line with 4 number is the output of `cloc` for that language.
