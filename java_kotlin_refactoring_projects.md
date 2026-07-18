@@ -14,10 +14,49 @@ MADDI_EXPORTS="--add-exports jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED \
 
 Analyse **prep only** for now (`-DanalysisSteps=prep` / `--analysis-steps prep`); modification is still too slow.
 
-### Maven projects (e.g. Jenkins) — the maddi Maven plugin
+### Maven projects (e.g. Jenkins, Guava) — the maddi Maven plugin
 
-Install the plugin once (in the maddi repo): `./gradlew :maddi-mvnplugin:publishToMavenLocal`. Then, from anywhere
-in the reactor, select the module with `-pl`:
+Install the plugin once (in the maddi repo): `./gradlew :maddi-mvnplugin:publishToMavenLocal`.
+
+The plugin has two goals of interest, both driven off the same computed `InputConfiguration`:
+
+- **`write-input-configuration`** — write `target/inputConfiguration.json` and exit (no analysis). Use this to
+  *generate an input configuration* for later runs, for diffing, or for handing to another tool.
+- **`run`** — compute the config *and* run the analyzer (`-DanalysisSteps=prep`).
+
+#### Generate an input configuration (`write-input-configuration`)
+
+From anywhere in the reactor, select the target module with `-pl` and bind `generate-test-sources` first (so
+every generated/added source root is registered):
+
+```
+# Jenkins (module cli) — plain src/main/java, src/test/java layout
+cd jenkins
+env MAVEN_OPTS="$MADDI_EXPORTS -Xmx6G" mvn \
+  -pl cli generate-test-sources io.codelaser:maddi-mvnplugin:0.8.2:write-input-configuration
+# -> jenkins/cli/target/inputConfiguration.json  (2 source sets, 22 classpath parts)
+
+# Guava (module guava) — non-standard <sourceDirectory>src</sourceDirectory>
+cd guava
+mvn -pl guava -am install -DskipTests            # once: publish the reactor jars to ~/.m2
+env MAVEN_OPTS="$MADDI_EXPORTS -Xmx6G" mvn \
+  -pl guava generate-test-sources io.codelaser:maddi-mvnplugin:0.8.2:write-input-configuration
+# -> guava/guava/target/inputConfiguration.json  (main SS points at guava/src, test at guava/test)
+```
+
+The plugin reads Maven's own `compileSourceRoots`/`testCompileSourceRoots`, so a custom `<sourceDirectory>`
+(Guava's `src`) or `build-helper` `add-test-source` roots are picked up automatically — no special handling.
+
+Then run the analyzer straight off the generated JSON (validates the config end-to-end):
+
+```
+cd ~/git/maddi-kotlin
+./gradlew :maddi-run-openjdk:run --args="\
+  --input-configuration /Users/bnaudts/git/test-oss/jenkins/cli/target/inputConfiguration.json \
+  --analysis-steps prep"
+```
+
+#### Or compute + analyse in one step (`run`)
 
 ```
 cd jenkins
@@ -30,8 +69,12 @@ is registered — this includes `build-helper-maven-plugin` `add-test-source` ro
 langchain4j-core pulls in `../langchain4j-test/src/main/java` there; plain `generate-sources` misses it);
 `jmods` defaults to `java.se` (the whole JDK on the classpath) — override with `-Djmods=java.base` for a leaner run;
 source directories are emitted absolute, so the goal no longer needs to run from the module directory;
-for a multi-module reactor, `mvn install -pl <module> -am -DskipTests` first so the plugin can resolve sibling jars;
-`...:write-input-configuration` (instead of `:run`) just writes `target/inputConfiguration.json` and exits.
+**for any multi-module reactor (Guava, Timefold, langchain4j, …) run `mvn install -pl <module> -am -DskipTests`
+first** so the plugin can resolve sibling reactor modules as jars from `~/.m2` — this is the usual reason
+`write-input-configuration` "fails" on a fresh checkout (`Cannot resolve … :jar`).
+
+Both Jenkins (`cli`) and Guava (`guava`) verified generating + prep-analysing green on 2026-07-17
+against the merged `kotlin`/`main` plugin (0.8.2).
 
 ### Gradle projects (e.g. Fernflower) — derive a config from the compile log
 
