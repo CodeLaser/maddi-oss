@@ -38,6 +38,11 @@ vars:
   DEFAULT_MADDI_REPO:
     sh: cd "{{.ROOT_DIR}}/../.." && echo "$(pwd)/maddi-kotlin"
   MADDI_REPO: '{{.MADDI_REPO | default .DEFAULT_MADDI_REPO}}'
+  # JDK 21 home, used ONLY by projects that cannot build on JDK 26 (sonarqube). macOS default;
+  # override in .env for other platforms. Empty if no JDK 21 is installed.
+  DEFAULT_JDK21_HOME:
+    sh: /usr/libexec/java_home -v 21 2>/dev/null || true
+  JDK21_HOME: '{{.JDK21_HOME | default .DEFAULT_JDK21_HOME}}'
 
 env:
   # Exported to every command a task runs (builds, plugin invocations, and any
@@ -70,6 +75,7 @@ tasks:
     cmds:
       - 'echo "TEST_OSS_ROOT = {{.TEST_OSS_ROOT}}"'
       - 'echo "MADDI_REPO    = {{.MADDI_REPO}}"'
+      - 'echo "JDK21_HOME    = {{.JDK21_HOME | default "<none — only sonarqube needs it>"}}"'
       - 'echo "JAVA_HOME     = ${JAVA_HOME:-<unset — set it in .env>}"'
       - 'echo "MADDI_EXPORTS = set ($(echo $MADDI_EXPORTS | wc -w | tr -d " ") words)"'
       - 'echo -n "java:           "; java -version 2>&1 | head -1'
@@ -271,6 +277,15 @@ tasks:
     cmds:
       - { task: _clone, vars: { NAME: wildfly, URL: 'https://github.com/wildfly/wildfly.git' } }
       - 'echo "Before building: apply the commons-collections license fix from java_kotlin_refactoring_projects.md, then run: cd {{.TEST_OSS_ROOT}}/wildfly && ./mvnw clean install -DskipTests"'
+
+  sonarqube:
+    desc: 'sonarqube — Gradle, JDK 21 ONLY (does NOT build on the JDK 26 used elsewhere; pins the Gradle JVM to JDK21_HOME)'
+    preconditions:
+      - sh: 'test -n "{{.JDK21_HOME}}"'
+        msg: "sonarqube needs JDK 21 — it does not build on JDK 26. Install a JDK 21, or set JDK21_HOME in .env (macOS: /usr/libexec/java_home -v 21)."
+    cmds:
+      - { task: _clone, vars: { NAME: sonarqube, URL: 'https://github.com/SonarSource/sonarqube.git' } }
+      - { task: _build, vars: { NAME: sonarqube, BUILD: './gradlew -Dorg.gradle.java.home={{.JDK21_HOME}} compileTestJava' } }
 
   # --------------------------------------------------------- internal helpers
 
