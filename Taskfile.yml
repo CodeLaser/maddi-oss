@@ -1,0 +1,378 @@
+# Taskfile.yml — install & manage the maddi "test-oss" corpus.
+#
+#   https://taskfile.dev   (install: `brew install go-task`)
+#   Quick start:
+#     task doctor            # check JDK 26 / env / where the corpus will live
+#     task init              # write a .env you can edit (sets TEST_OSS_ROOT)
+#     task install:wired     # clone + build the 8 projects maddi's tests actually consume
+#     task --list            # everything else
+#
+# WHERE THINGS GO
+#   Projects are cloned under TEST_OSS_ROOT (see below). By default that is the
+#   PARENT of this file's directory — i.e. if this repo is checked out at
+#   <root>/test-oss/maddi-testoss, the corpus lives at <root>/test-oss. Override
+#   it in .env (recommended) or per-invocation: `task guava TEST_OSS_ROOT=/data/oss`.
+#
+# PREREQUISITES (see `task doctor`)
+#   - JDK 26 on PATH and JAVA_HOME (temurin-26 here). Put JAVA_HOME in .env.
+#   - Maven / Gradle wrappers come with each project; Tomcat needs `ant`.
+#   - CodeLaser GitHub SSH access is NOT needed here (these are public OSS repos);
+#     it IS needed for the separate testarchive / testtransform corpora.
+
+version: '3'
+
+dotenv: ['.env']            # optional; created by `task init`, ignored if absent
+
+vars:
+  # Root under which every corpus project is cloned. Resolution order:
+  #   1. TEST_OSS_ROOT from the environment / .env / CLI (`task X TEST_OSS_ROOT=…`)
+  #   2. fallback: the parent directory of this Taskfile (the test-oss root)
+  # DEFAULT_ROOT must be defined BEFORE TEST_OSS_ROOT so `default` sees its value.
+  DEFAULT_ROOT:
+    sh: cd "{{.ROOT_DIR}}/.." && pwd
+  TEST_OSS_ROOT: '{{.TEST_OSS_ROOT | default .DEFAULT_ROOT}}'
+  # maddi Maven plugin coordinates, used by the `config:*` tasks below.
+  MADDI_PLUGIN_VERSION: '0.8.2'
+  # maddi checkout, used by the config:* tasks (plugin publish + `maddi --compile-log`).
+  # Default assumes it sits next to the test-oss root as "maddi-kotlin"; override in .env.
+  DEFAULT_MADDI_REPO:
+    sh: cd "{{.ROOT_DIR}}/../.." && echo "$(pwd)/maddi-kotlin"
+  MADDI_REPO: '{{.MADDI_REPO | default .DEFAULT_MADDI_REPO}}'
+
+env:
+  # Exported to every command a task runs (builds, plugin invocations, and any
+  # `maddi` you drive through this Taskfile). The 5 javac --add-exports the
+  # openjdk front-end needs are bundled here as MADDI_EXPORTS.
+  TEST_OSS_ROOT: '{{.TEST_OSS_ROOT}}'
+  MADDI_EXPORTS: >-
+    --add-exports jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED
+    --add-exports jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED
+    --add-exports jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED
+    --add-exports jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED
+    --add-exports jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED
+
+tasks:
+
+  default:
+    cmds: [{ task: help }]
+
+  help:
+    desc: 'List available tasks'
+    silent: true
+    cmds:
+      - task --list
+
+  # ---------------------------------------------------------------- environment
+
+  doctor:
+    desc: 'Check prerequisites: JDK 26, task, JAVA_HOME, corpus root'
+    silent: true
+    cmds:
+      - 'echo "TEST_OSS_ROOT = {{.TEST_OSS_ROOT}}"'
+      - 'echo "MADDI_REPO    = {{.MADDI_REPO}}"'
+      - 'echo "JAVA_HOME     = ${JAVA_HOME:-<unset — set it in .env>}"'
+      - 'echo "MADDI_EXPORTS = set ($(echo $MADDI_EXPORTS | wc -w | tr -d " ") words)"'
+      - 'echo -n "java:           "; java -version 2>&1 | head -1'
+      - 'java -version 2>&1 | grep -q ''"26'' && echo "JDK 26          OK" || echo "JDK 26          *** NOT DETECTED — maddi needs JDK 26 ***"'
+      - 'echo -n "task:           "; task --version'
+
+  env:
+    desc: 'Print export lines for your shell:  eval "$(task env)"'
+    silent: true
+    cmds:
+      - 'echo "export TEST_OSS_ROOT={{.TEST_OSS_ROOT}}"'
+      - 'echo "export MADDI_EXPORTS=\"$MADDI_EXPORTS\""'
+
+  init:
+    desc: 'Write a starter .env (TEST_OSS_ROOT + JAVA_HOME) — edit to taste'
+    status:
+      - test -f '{{.ROOT_DIR}}/.env'
+    cmds:
+      - |
+        cat > '{{.ROOT_DIR}}/.env' <<EOF
+        # Corpus location and JDK for the maddi test-oss Taskfile.
+        TEST_OSS_ROOT={{.TEST_OSS_ROOT}}
+        MADDI_REPO={{.MADDI_REPO}}
+        JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-26.jdk/Contents/Home
+        EOF
+      - 'echo "Wrote {{.ROOT_DIR}}/.env — review it, then run: task doctor"'
+
+  compat:symlink:
+    desc: 'Make the hardcoded /Users/bnaudts/git/test-oss path resolve to YOUR corpus (workaround for maddi tests that still pin that absolute path). Uses sudo.'
+    status:
+      - test -e /Users/bnaudts/git/test-oss
+    cmds:
+      - 'echo "Linking /Users/bnaudts/git/test-oss -> {{.TEST_OSS_ROOT}} (sudo needed to create /Users/bnaudts)"'
+      - sudo mkdir -p /Users/bnaudts/git
+      - sudo ln -s "{{.TEST_OSS_ROOT}}" /Users/bnaudts/git/test-oss
+
+  verify:
+    desc: 'Report which wired projects are cloned / built / have an inputConfiguration.json'
+    silent: true
+    cmds:
+      - |
+        for p in activemq camel elasticsearch fernflower guava jenkins langchain4j timefold-solver; do
+          d="{{.TEST_OSS_ROOT}}/$p"
+          cloned=$([ -d "$d/.git" ] && echo yes || echo NO)
+          cfg=$([ -f "$d/inputConfiguration.json" ] && echo yes || echo no)
+          printf '  %-16s cloned=%-3s inputConfiguration.json=%s\n' "$p" "$cloned" "$cfg"
+        done
+
+  # --------------------------------------------------------------- bulk targets
+
+  install:wired:
+    desc: 'Clone + build the 8 projects maddi tests actually consume (activemq camel elasticsearch fernflower guava jenkins langchain4j timefold-solver)'
+    cmds:
+      - { task: activemq }
+      - { task: camel }
+      - { task: elasticsearch }
+      - { task: fernflower }
+      - { task: guava }
+      - { task: jenkins }
+      - { task: langchain4j }
+      - { task: timefold-solver }
+
+  install:extra:
+    desc: 'Clone + build the other "Built" projects from the catalogue (large; hours of build time)'
+    cmds:
+      - { task: gradle }
+      - { task: hadoop }
+      - { task: hazelcast }
+      - { task: hibernate-orm }
+      - { task: hive }
+      - { task: keycloak }
+      - { task: pulsar }
+      - { task: quarkus }
+
+  install:all:
+    desc: 'install:wired + install:extra (does NOT include tomcat/trino/wildfly — those need special setup, run them individually)'
+    cmds:
+      - { task: install:wired }
+      - { task: install:extra }
+
+  # ------------------------------------------------------- wired projects (8)
+  # Each: shallow-safe FULL clone (Maven version plugins need history) + the
+  # catalogue's build command. Re-running skips the clone if already present.
+
+  activemq:
+    desc: 'activemq — Maven'
+    cmds:
+      - { task: _clone, vars: { NAME: activemq, URL: 'https://github.com/apache/activemq.git' } }
+      - { task: _build, vars: { NAME: activemq, BUILD: 'mvn clean install -DskipTests' } }
+
+  camel:
+    desc: 'camel — Maven wrapper (huge: 600+ modules)'
+    cmds:
+      - { task: _clone, vars: { NAME: camel, URL: 'https://github.com/apache/camel.git' } }
+      - { task: _build, vars: { NAME: camel, BUILD: './mvnw install -DskipTests' } }
+
+  elasticsearch:
+    desc: 'elasticsearch — Gradle'
+    cmds:
+      - { task: _clone, vars: { NAME: elasticsearch, URL: 'https://github.com/elastic/elasticsearch.git' } }
+      - { task: _build, vars: { NAME: elasticsearch, BUILD: './gradlew compileTestJava' } }
+
+  fernflower:
+    desc: 'fernflower — Gradle (small; good first target)'
+    cmds:
+      - { task: _clone, vars: { NAME: fernflower, URL: 'https://github.com/fesh0r/fernflower.git' } }
+      - { task: _build, vars: { NAME: fernflower, BUILD: './gradlew compileTestJava' } }
+
+  guava:
+    desc: 'guava — Maven'
+    cmds:
+      - { task: _clone, vars: { NAME: guava, URL: 'https://github.com/google/guava.git' } }
+      - { task: _build, vars: { NAME: guava, BUILD: 'mvn install -DskipTests' } }
+
+  jenkins:
+    desc: 'jenkins — Maven'
+    cmds:
+      - { task: _clone, vars: { NAME: jenkins, URL: 'https://github.com/jenkinsci/jenkins.git' } }
+      - { task: _build, vars: { NAME: jenkins, BUILD: 'mvn install -DskipTests -Dlicense.disableCheck' } }
+
+  langchain4j:
+    desc: 'langchain4j — Maven'
+    cmds:
+      - { task: _clone, vars: { NAME: langchain4j, URL: 'https://github.com/langchain4j/langchain4j.git' } }
+      - { task: _build, vars: { NAME: langchain4j, BUILD: 'mvn clean install -DskipTests' } }
+
+  timefold-solver:
+    desc: 'timefold-solver — Maven wrapper'
+    cmds:
+      - { task: _clone, vars: { NAME: timefold-solver, URL: 'https://github.com/TimefoldAI/timefold-solver.git' } }
+      - { task: _build, vars: { NAME: timefold-solver, BUILD: './mvnw clean install -DskipTests' } }
+
+  # ---------------------------------------------------- extra "Built" projects
+
+  gradle:
+    desc: 'gradle — Gradle'
+    cmds:
+      - { task: _clone, vars: { NAME: gradle, URL: 'https://github.com/gradle/gradle.git' } }
+      - { task: _build, vars: { NAME: gradle, BUILD: './gradlew compileTestJava' } }
+
+  hadoop:
+    desc: 'hadoop — Maven wrapper (slow; shaded builds take ages)'
+    cmds:
+      - { task: _clone, vars: { NAME: hadoop, URL: 'https://github.com/apache/hadoop.git' } }
+      - { task: _build, vars: { NAME: hadoop, BUILD: './mvnw install -DskipTests' } }
+
+  hazelcast:
+    desc: 'hazelcast — Maven wrapper'
+    cmds:
+      - { task: _clone, vars: { NAME: hazelcast, URL: 'https://github.com/hazelcast/hazelcast.git' } }
+      - { task: _build, vars: { NAME: hazelcast, BUILD: './mvnw clean install -DskipTests' } }
+
+  hibernate-orm:
+    desc: 'hibernate-orm — Gradle'
+    cmds:
+      - { task: _clone, vars: { NAME: hibernate-orm, URL: 'https://github.com/hibernate/hibernate-orm.git' } }
+      - { task: _build, vars: { NAME: hibernate-orm, BUILD: './gradlew compileTestJava' } }
+
+  hive:
+    desc: 'hive — Maven (54/57 modules build)'
+    cmds:
+      - { task: _clone, vars: { NAME: hive, URL: 'https://github.com/apache/hive.git' } }
+      - { task: _build, vars: { NAME: hive, BUILD: 'mvn install -DskipTests' } }
+
+  keycloak:
+    desc: 'keycloak — Maven wrapper'
+    cmds:
+      - { task: _clone, vars: { NAME: keycloak, URL: 'https://github.com/keycloak/keycloak.git' } }
+      - { task: _build, vars: { NAME: keycloak, BUILD: './mvnw clean install -DskipTests' } }
+
+  pulsar:
+    desc: 'pulsar — Gradle (needs -PskipJavaVersionCheck on JDK 26)'
+    cmds:
+      - { task: _clone, vars: { NAME: pulsar, URL: 'https://github.com/apache/pulsar.git' } }
+      - { task: _build, vars: { NAME: pulsar, BUILD: './gradlew compileTestJava -PskipJavaVersionCheck' } }
+
+  quarkus:
+    desc: 'quarkus — Maven wrapper'
+    cmds:
+      - { task: _clone, vars: { NAME: quarkus, URL: 'https://github.com/quarkusio/quarkus.git' } }
+      - { task: _build, vars: { NAME: quarkus, BUILD: './mvnw clean install -DskipTests' } }
+
+  # ---------------------------------------------- special-setup projects (manual)
+
+  tomcat:
+    desc: 'tomcat — Ant build (needs `ant` on PATH)'
+    cmds:
+      - { task: _clone, vars: { NAME: tomcat, URL: 'https://github.com/apache/tomcat.git' } }
+      - { task: _build, vars: { NAME: tomcat, BUILD: 'ant' } }
+
+  trino:
+    desc: 'trino — Maven wrapper; uses the Temurin build + -Duse.jdk17=true'
+    cmds:
+      - { task: _clone, vars: { NAME: trino, URL: 'https://github.com/trinodb/trino.git' } }
+      - { task: _build, vars: { NAME: trino, BUILD: './mvnw clean install -DskipTests=true -Duse.jdk17=true' } }
+
+  wildfly:
+    desc: 'wildfly — Maven wrapper. NOTE: needs a commons-collections license edit first (see java_kotlin_refactoring_projects.md).'
+    cmds:
+      - { task: _clone, vars: { NAME: wildfly, URL: 'https://github.com/wildfly/wildfly.git' } }
+      - 'echo "Before building: apply the commons-collections license fix from java_kotlin_refactoring_projects.md, then run: cd {{.TEST_OSS_ROOT}}/wildfly && ./mvnw clean install -DskipTests"'
+
+  # --------------------------------------------------------- internal helpers
+
+  _clone:
+    internal: true
+    dir: '{{.TEST_OSS_ROOT}}'
+    requires: { vars: [NAME, URL] }
+    status:
+      - test -d '{{.TEST_OSS_ROOT}}/{{.NAME}}/.git'
+    cmds:
+      - 'echo ">>> cloning {{.NAME}} from {{.URL}}"'
+      - git clone '{{.URL}}' '{{.NAME}}'
+
+  _build:
+    internal: true
+    dir: '{{.TEST_OSS_ROOT}}/{{.NAME}}'
+    requires: { vars: [NAME, BUILD] }
+    cmds:
+      - 'echo ">>> building {{.NAME}}:  {{.BUILD}}"'
+      - '{{.BUILD}}'
+
+  # ============================= input-configuration generation ===============
+  # The maddi corpus tests read <TEST_OSS_ROOT>/<project>/inputConfiguration.json. These files carry
+  # THIS machine's absolute paths, so each machine regenerates them locally after building the
+  # project (run `task <project>` first). Two generation paths, matching how each pinned config was
+  # produced — the module / scope below are taken from the checked-in baselines, not guessed:
+  #   - Maven projects: the maddi Maven plugin's write-input-configuration on ONE module.
+  #   - Gradle projects: capture the compile log, feed it to `maddi --compile-log` (whole project).
+  # Both need a maddi checkout (MADDI_REPO). The Maven path also needs the plugin in ~/.m2
+  # (task config:plugin). timefold-solver is intentionally not scripted here — see config:timefold.
+
+  config:plugin:
+    desc: 'Publish the maddi Maven plugin to ~/.m2 (needed by the Maven config:* tasks)'
+    dir: '{{.MADDI_REPO}}'
+    cmds:
+      - ./gradlew :maddi-mvnplugin:publishToMavenLocal
+
+  config:all:
+    desc: 'Regenerate every corpus config the test suite consumes (build the projects first)'
+    cmds:
+      - { task: config:plugin }
+      - { task: config:activemq }
+      - { task: config:camel }
+      - { task: config:guava }
+      - { task: config:jenkins }
+      - { task: config:langchain4j }
+      - { task: config:fernflower }
+      - { task: config:elasticsearch }
+
+  # --- Maven projects: maddi Maven plugin on the one module each pinned config covers ---
+  config:activemq:
+    desc: 'activemq config (module activemq-broker)'
+    cmds: [{ task: _config:maven, vars: { NAME: activemq, MODULE: activemq-broker } }]
+  config:camel:
+    desc: 'camel config (module core/camel-core-model)'
+    cmds: [{ task: _config:maven, vars: { NAME: camel, MODULE: core/camel-core-model } }]
+  config:guava:
+    desc: 'guava config (module guava)'
+    cmds: [{ task: _config:maven, vars: { NAME: guava, MODULE: guava } }]
+  config:jenkins:
+    desc: 'jenkins config (module core — this is what TestJenkinsCore consumes)'
+    cmds: [{ task: _config:maven, vars: { NAME: jenkins, MODULE: core } }]
+  config:langchain4j:
+    desc: 'langchain4j config (module langchain4j-core)'
+    cmds: [{ task: _config:maven, vars: { NAME: langchain4j, MODULE: langchain4j-core } }]
+
+  # --- Gradle projects: compile-log path (whole reactor) ---
+  config:fernflower:
+    desc: 'fernflower config (Gradle compile-log)'
+    cmds: [{ task: _config:gradle-log, vars: { NAME: fernflower, TASKS: 'compileJava compileTestJava' } }]
+  config:elasticsearch:
+    desc: 'elasticsearch config (Gradle compile-log, ~27 source sets)'
+    cmds: [{ task: _config:gradle-log, vars: { NAME: elasticsearch, TASKS: 'compileTestJava' } }]
+
+  config:timefold:
+    desc: 'timefold-solver config is NOT scripted — explains how to generate it'
+    silent: true
+    cmds:
+      - |
+        echo "timefold-solver's pinned config is built from a captured Maven compile log, not the"
+        echo "single-module plugin path. Regenerate by capturing a mvn compile log for the modules"
+        echo "under test and feeding it to 'maddi --compile-log', writing to:"
+        echo "  {{.TEST_OSS_ROOT}}/timefold-solver/inputConfiguration.json"
+        echo "See TestJavacTimefoldSolverCore in maddi-run-openjdk and java_kotlin_refactoring_projects.md."
+
+  _config:maven:
+    internal: true
+    requires: { vars: [NAME, MODULE] }
+    dir: '{{.TEST_OSS_ROOT}}/{{.NAME}}'
+    cmds:
+      - 'echo ">>> {{.NAME}}: write-input-configuration on module {{.MODULE}} (needs a prior `task {{.NAME}}` build + `task config:plugin`)"'
+      - MAVEN_OPTS="$MADDI_EXPORTS -Xmx6G" mvn -pl {{.MODULE}} generate-test-sources io.codelaser:maddi-mvnplugin:{{.MADDI_PLUGIN_VERSION}}:write-input-configuration
+      - cp '{{.MODULE}}/target/inputConfiguration.json' inputConfiguration.json
+      - 'echo "Wrote {{.TEST_OSS_ROOT}}/{{.NAME}}/inputConfiguration.json"'
+
+  _config:gradle-log:
+    internal: true
+    requires: { vars: [NAME, TASKS] }
+    dir: '{{.TEST_OSS_ROOT}}/{{.NAME}}'
+    cmds:
+      - 'echo ">>> {{.NAME}}: capturing compile log ({{.TASKS}})"'
+      - ./gradlew --no-build-cache --rerun-tasks {{.TASKS}} --debug 2>&1 | grep -a 'Compiler arguments:' > compile.log
+      - 'echo ">>> {{.NAME}}: maddi --compile-log -> inputConfiguration.json"'
+      - '{{.MADDI_REPO}}/gradlew -p {{.MADDI_REPO}} :maddi-run-openjdk:run --args="--compile-log {{.TEST_OSS_ROOT}}/{{.NAME}}/compile.log --write-input-configuration {{.TEST_OSS_ROOT}}/{{.NAME}}/inputConfiguration.json"'
+      - 'echo "Wrote {{.TEST_OSS_ROOT}}/{{.NAME}}/inputConfiguration.json"'

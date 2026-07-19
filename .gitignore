@@ -1,0 +1,3 @@
+# Local, machine-specific config written by `task init` — never commit.
+.env
+.env.local
