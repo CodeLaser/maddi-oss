@@ -50,7 +50,7 @@ The plugin reads Maven's own `compileSourceRoots`/`testCompileSourceRoots`, so a
 Then run the analyzer straight off the generated JSON (validates the config end-to-end):
 
 ```
-cd ~/git/maddi-kotlin
+cd ~/git/maddi
 ./gradlew :maddi-run-openjdk:run --args="\
   --input-configuration /Users/bnaudts/git/test-oss/jenkins/cli/target/inputConfiguration.json \
   --analysis-steps prep"

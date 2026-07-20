@@ -34,9 +34,9 @@ vars:
   # maddi Maven plugin coordinates, used by the `config:*` tasks below.
   MADDI_PLUGIN_VERSION: '0.8.2'
   # maddi checkout, used by the config:* tasks (plugin publish + `maddi --compile-log`).
-  # Default assumes it sits next to the test-oss root as "maddi-kotlin"; override in .env.
+  # Default assumes it sits next to the test-oss root as "maddi"; override in .env.
   DEFAULT_MADDI_REPO:
-    sh: cd "{{.ROOT_DIR}}/../.." && echo "$(pwd)/maddi-kotlin"
+    sh: cd "{{.ROOT_DIR}}/../.." && echo "$(pwd)/maddi"
   MADDI_REPO: '{{.MADDI_REPO | default .DEFAULT_MADDI_REPO}}'
   # JDK 21 home, used ONLY by projects that cannot build on JDK 26 (sonarqube). macOS default;
   # override in .env for other platforms. Empty if no JDK 21 is installed.
