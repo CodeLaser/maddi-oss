@@ -315,7 +315,7 @@ tasks:
   #   - Maven projects: the maddi Maven plugin's write-input-configuration on ONE module.
   #   - Gradle projects: capture the compile log, feed it to `maddi --compile-log` (whole project).
   # Both need a maddi checkout (MADDI_REPO). The Maven path also needs the plugin in ~/.m2
-  # (task config:plugin). timefold-solver is intentionally not scripted here — see config:timefold.
+  # (task config:plugin).
 
   config:plugin:
     desc: 'Publish the maddi Maven plugin to ~/.m2 (needed by the Maven config:* tasks)'
@@ -334,6 +334,7 @@ tasks:
       - { task: config:langchain4j }
       - { task: config:fernflower }
       - { task: config:elasticsearch }
+      - { task: config:timefold }
 
   # --- Maven projects: maddi Maven plugin on the one module each pinned config covers ---
   config:activemq:
@@ -361,15 +362,8 @@ tasks:
     cmds: [{ task: _config:gradle-log, vars: { NAME: elasticsearch, TASKS: 'compileTestJava' } }]
 
   config:timefold:
-    desc: 'timefold-solver config is NOT scripted — explains how to generate it'
-    silent: true
-    cmds:
-      - |
-        echo "timefold-solver's pinned config is built from a captured Maven compile log, not the"
-        echo "single-module plugin path. Regenerate by capturing a mvn compile log for the modules"
-        echo "under test and feeding it to 'maddi --compile-log', writing to:"
-        echo "  {{.TEST_OSS_ROOT}}/timefold-solver/inputConfiguration.json"
-        echo "See TestJavacTimefoldSolverCore in maddi-run-openjdk and java_kotlin_refactoring_projects.md."
+    desc: 'timefold-solver config (Maven compile-log, whole 65-source-set reactor)'
+    cmds: [{ task: _config:maven-log, vars: { NAME: timefold-solver, TASKS: test-compile } }]
 
   _config:maven:
     internal: true
@@ -379,6 +373,28 @@ tasks:
       - 'echo ">>> {{.NAME}}: write-input-configuration on module {{.MODULE}} (needs a prior `task {{.NAME}}` build + `task config:plugin`)"'
       - MAVEN_OPTS="$MADDI_EXPORTS -Xmx6G" mvn -pl {{.MODULE}} generate-test-sources io.codelaser:maddi-mvnplugin:{{.MADDI_PLUGIN_VERSION}}:write-input-configuration
       - cp '{{.MODULE}}/target/inputConfiguration.json' inputConfiguration.json
+      - 'echo "Wrote {{.TEST_OSS_ROOT}}/{{.NAME}}/inputConfiguration.json"'
+
+  # Maven counterpart of _config:gradle-log, for reactors the single-module plugin path cannot
+  # cover. `mvn -X` prints "[DEBUG] Command line options:" followed by the javac line for EVERY
+  # module it compiles, which is exactly what `maddi --compile-log` consumes — so one capture over
+  # the whole reactor yields every source set at once (timefold: 65).
+  #
+  # `clean` is NOT optional, and this is the trap the Gradle path solves with --rerun-tasks:
+  # maven-compiler-plugin skips a module whose classes are up to date, and a skipped module emits
+  # no "Command line options:" line at all. Capturing without `clean` on an already-built reactor
+  # silently yields a PARTIAL config — measured on timefold: 22 source sets instead of 65, missing
+  # core/main, the module everything else depends on. The result loads and analyses without
+  # complaint, so nothing downstream reveals the loss.
+  _config:maven-log:
+    internal: true
+    requires: { vars: [NAME, TASKS] }
+    dir: '{{.TEST_OSS_ROOT}}/{{.NAME}}'
+    cmds:
+      - 'echo ">>> {{.NAME}}: capturing Maven compile log (clean {{.TASKS}}) — full rebuild, slow"'
+      - MAVEN_OPTS="$MADDI_EXPORTS -Xmx6G" ./mvnw -X clean {{.TASKS}} > compile.log 2>&1
+      - 'echo ">>> {{.NAME}}: maddi --compile-log -> inputConfiguration.json"'
+      - '{{.MADDI_REPO}}/gradlew -p {{.MADDI_REPO}} :maddi-run-openjdk:run --args="--compile-log {{.TEST_OSS_ROOT}}/{{.NAME}}/compile.log --write-input-configuration {{.TEST_OSS_ROOT}}/{{.NAME}}/inputConfiguration.json"'
       - 'echo "Wrote {{.TEST_OSS_ROOT}}/{{.NAME}}/inputConfiguration.json"'
 
   _config:gradle-log:

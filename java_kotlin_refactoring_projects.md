@@ -93,6 +93,38 @@ env JAVA_TOOL_OPTIONS="$MADDI_EXPORTS -Xmx6G" maddi \
 (`maddi` = the openjdk runner, `org.e2immu.analyzer.run.openjdkmain.Main`; the `--compile-log` path adds the
 `java.se` jmod closure automatically. See `maddi-run-openjdk/running-examples.md` in the maddi repo.)
 
+## Cycle structure of the wired corpus
+
+Measured 2026-07-21 on the 8 wired projects, at the module scope each `config:*` task pins. "Primary
+types" is what maddi parses; "largest SCC" is the biggest strongly connected component of the
+primary-type graph (`SccCondensation`, not `Linearize`'s cluster, which overstates it).
+
+Only the type graph is needed for this, so it comes from **prep alone** — no modification analysis,
+seconds per project rather than minutes.
+
+| project | scope | primary types | largest SCC | share |
+|---|---|---|---|---|
+| fernflower | whole (Gradle) | 227 | **164** | **72%** |
+| camel | `core/camel-core-model` | 399 | 158 | 40% |
+| activemq | `activemq-broker` | 500 | 176 | 35% |
+| langchain4j | `langchain4j-core` | 518 | 7 | 1% |
+| guava | `guava` | 610 | *fails to load* | |
+| jenkins | `core` | 1475 | *fails to load* | |
+| timefold-solver | whole reactor (65 source sets) | 3574 | 842 | 24% |
+| elasticsearch | whole (27 source sets) | 8467 | **3680** | **43%** |
+
+Practical consequences when picking a corpus for cycle work:
+
+- **fernflower is the best small proxy for a tangled monorepo** — 72% of its types in one component,
+  and it parses in about 4 seconds. Far better for iteration than timefold.
+- **elasticsearch is the most realistic at scale**: 3680 types in one component.
+- **langchain4j has no cycle worth studying** (largest SCC 7, spread over 28 tiny components). It is
+  a good corpus for *modification/immutability* work and a poor one for cycles.
+- **guava and jenkins currently cannot be loaded** by the metrics pipeline at all: both fail on
+  `assert` "From anonymous inner to enclosing: should be marked as recursion" in
+  `codelaser-metrics-cycle`'s `GraphComputerImpl`. It is a bare `assert`, so this is invisible in
+  production runs (no `-ea`) and only bites under test. Not yet diagnosed.
+
 ## Status: Built
 
 Note: each line with 4 number is the output of `cloc` for that language.
