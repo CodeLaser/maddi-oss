@@ -123,6 +123,7 @@ Practical consequences when picking a corpus for cycle work:
   assumed here for a while; it was simply never loadable to check.
 - **langchain4j has no cycle worth studying** (largest SCC 7, spread over 28 tiny components). It is
   a good corpus for *modification/immutability* work and a poor one for cycles.
+
 guava and jenkins used to fail to load entirely, on `codelaser-metrics-cycle`'s
 `GraphComputerImpl` assert "From anonymous inner to enclosing: should be marked as recursion". The
 assert was wrong — an anonymous subclass that *overrides* the method it is declared in (Guava's
