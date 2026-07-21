@@ -108,8 +108,8 @@ seconds per project rather than minutes.
 | camel | `core/camel-core-model` | 399 | 158 | 40% |
 | activemq | `activemq-broker` | 500 | 176 | 35% |
 | langchain4j | `langchain4j-core` | 518 | 7 | 1% |
-| guava | `guava` | 610 | *fails to load* | |
-| jenkins | `core` | 1475 | *fails to load* | |
+| guava | `guava` | 610 | 118 | 19% |
+| jenkins | `core` | 1475 | **639** | **43%** |
 | timefold-solver | whole reactor (65 source sets) | 3574 | 842 | 24% |
 | elasticsearch | whole (27 source sets) | 8467 | **3680** | **43%** |
 
@@ -117,13 +117,17 @@ Practical consequences when picking a corpus for cycle work:
 
 - **fernflower is the best small proxy for a tangled monorepo** — 72% of its types in one component,
   and it parses in about 4 seconds. Far better for iteration than timefold.
-- **elasticsearch is the most realistic at scale**: 3680 types in one component.
+- **elasticsearch is the most realistic at scale**: 3680 types in one component; jenkins is the
+  next best at 639 of 1475 (43%).
+- **guava does have cycles** — 118 types over 21 components. Worth stating because the opposite was
+  assumed here for a while; it was simply never loadable to check.
 - **langchain4j has no cycle worth studying** (largest SCC 7, spread over 28 tiny components). It is
   a good corpus for *modification/immutability* work and a poor one for cycles.
-- **guava and jenkins currently cannot be loaded** by the metrics pipeline at all: both fail on
-  `assert` "From anonymous inner to enclosing: should be marked as recursion" in
-  `codelaser-metrics-cycle`'s `GraphComputerImpl`. It is a bare `assert`, so this is invisible in
-  production runs (no `-ea`) and only bites under test. Not yet diagnosed.
+guava and jenkins used to fail to load entirely, on `codelaser-metrics-cycle`'s
+`GraphComputerImpl` assert "From anonymous inner to enclosing: should be marked as recursion". The
+assert was wrong — an anonymous subclass that *overrides* the method it is declared in (Guava's
+`Joiner.useForNull` is the canonical case) produces that edge shape legitimately, as an override
+rather than a call. Fixed 2026-07-21; both projects load.
 
 ## Status: Built
 
